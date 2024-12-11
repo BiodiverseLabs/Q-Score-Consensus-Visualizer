@@ -10,7 +10,8 @@ This repository contains a Python script that:
    - A highlight count row indicating how many cells in each column are considered outliers.
    - Each nucleotide cell colored by its Q score.
    - Outlier cells (those that differ from ≥70% of the column) outlined in yellow.
-   - A consensus row at the bottom with `'-'` indicating excluded columns.
+   - Converts bases with quality scores ≤ 12 and are highlighted to 'N' for robust consensus generation.
+   - A consensus row at the top and bottom with `'-'` indicating excluded columns.
 6. Outputs a consensus FASTA file named `consensus-{X}ambig.fasta`, where `{X}` is the count of ambiguous nucleotides in the consensus.
 
 **Key Features:**
