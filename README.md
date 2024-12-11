@@ -62,5 +62,4 @@ Index Errors / Mismatches:
 Make sure MUSCLE runs correctly and produces a proper alignment. All sequences in the alignment should have the same length.
 No Consensus Columns:
 If all columns are gap-heavy, no columns are kept. In that case, the consensus row is empty and no consensus.fasta is created.
-License
-This script is provided under the MIT License. See LICENSE for details.
+
