@@ -6,6 +6,8 @@ import statistics
 from collections import Counter
 from Bio import SeqIO
 from Bio.Align import MultipleSeqAlignment
+from Bio.SeqRecord import SeqRecord
+from Bio.Seq import Seq
 
 def IUPAC_ambiguity(base_counts):
     IUPAC_CODES = {
@@ -20,47 +22,52 @@ def IUPAC_ambiguity(base_counts):
     bases = frozenset(base_counts.keys())
     return IUPAC_CODES.get(bases, "N")
 
-def create_consensus_with_ambiguity(aligned_records, threshold=0.7, gap_fraction_cutoff=0.6):
+def create_consensus_with_ambiguity(aligned_records, threshold=0.7, gap_fraction_cutoff=0.4):
     alignment = MultipleSeqAlignment(aligned_records)
     consensus = []
     ambiguity_count = 0
     length = alignment.get_alignment_length()
+    kept_columns = []
 
     for i in range(length):
         column = alignment[:, i]
         base_counts = Counter(column)
         total = sum(base_counts.values())
         gap_count = base_counts.get("-", 0)
+        n_count = base_counts.get("N", 0)
 
         # Check gap fraction
         if (gap_count / total) > gap_fraction_cutoff:
-            # Skip this column from the consensus
             continue
 
-        non_gap_total = total - gap_count
+        kept_columns.append(i)
+        non_gap_total = total - gap_count - n_count
 
         if non_gap_total == 0:
-            # No non-gap bases
+            # No ACGT bases, use N
             consensus.append("N")
             ambiguity_count += 1
             continue
 
-        # Identify bases that meet the threshold
+        # Identify bases that meet threshold
         passed = [(base, count) for base, count in base_counts.items()
                   if base in "ACGT" and (count / non_gap_total) >= threshold]
 
-        if len(passed) == 1:
-            # One base meets threshold
-            consensus.append(passed[0][0])
-        elif len(passed) > 1:
-            # Multiple bases meet threshold, use ambiguity over these bases
-            filtered_counts = {b: c for b, c in base_counts.items() if b in {x[0] for x in passed} and b in "ACGT"}
-            
-            # Apply 5% filter: only keep bases >5% of total reads
-            filtered_counts = {b: c for b, c in filtered_counts.items() if (c / total) > 0.05}
+        def apply_5_percent_filter(bases_dict):
+            return {b:c for b,c in bases_dict.items() if (c/total) > 0.05}
 
+        if len(passed) == 1:
+            b = passed[0][0]
+            # 5% filter
+            if (base_counts[b]/total) <= 0.05:
+                consensus.append("N")
+                ambiguity_count += 1
+            else:
+                consensus.append(b)
+        elif len(passed) > 1:
+            filtered_counts = {b: c for b,c in base_counts.items() if b in {x[0] for x in passed} and b in "ACGT"}
+            filtered_counts = apply_5_percent_filter(filtered_counts)
             if not filtered_counts:
-                # If no bases remain after 5% filter, use N
                 consensus.append("N")
                 ambiguity_count += 1
             else:
@@ -69,15 +76,10 @@ def create_consensus_with_ambiguity(aligned_records, threshold=0.7, gap_fraction
                     ambiguity_count += 1
                 consensus.append(code)
         else:
-            # No single base meets threshold
-            # Use ambiguity over all ACGT present
-            filtered_counts = {b: c for b, c in base_counts.items() if b in "ACGT"}
-            
-            # Apply 5% filter here as well
-            filtered_counts = {b: c for b, c in filtered_counts.items() if (c / total) > 0.05}
-
+            # No base meets threshold
+            filtered_counts = {b:c for b,c in base_counts.items() if b in "ACGT"}
+            filtered_counts = apply_5_percent_filter(filtered_counts)
             if not filtered_counts:
-                # No bases remain after filtering, use N
                 consensus.append("N")
                 ambiguity_count += 1
             else:
@@ -86,7 +88,7 @@ def create_consensus_with_ambiguity(aligned_records, threshold=0.7, gap_fraction
                     ambiguity_count += 1
                 consensus.append(code)
 
-    return "".join(consensus), ambiguity_count, [i for i in range(length) if i < len(consensus)]
+    return "".join(consensus), ambiguity_count, kept_columns
 
 def find_fastq_file():
     for f in os.listdir('.'):
@@ -116,10 +118,12 @@ def align_qualities_to_alignment(aligned_records, original_records):
     return aligned_qualities
 
 def compute_column_averages(aligned_qualities):
-    alignment_length = len(aligned_qualities[0][1]) if aligned_qualities else 0
+    if not aligned_qualities:
+        return []
+    alignment_length = len(aligned_qualities[0][1])
     column_quals = []
     for col in range(alignment_length):
-        column_values = [seq_qual[col] for (_, _, seq_qual) in aligned_qualities if seq_qual[col] is not None]
+        column_values = [q_list[col] for (_, _, q_list) in aligned_qualities if q_list[col] is not None]
         avg = statistics.mean(column_values) if column_values else None
         column_quals.append(avg)
     return column_quals
@@ -133,11 +137,9 @@ def quality_to_bin(q, binsize=5, max_qual=40):
     return f"q{bin_index}"
 
 def compute_column_base_counts(aligned_qualities):
-    """
-    Compute base counts per column excluding gaps.
-    Returns a list of dictionaries: column_base_counts[i] = {base: count, ...}
-    """
-    alignment_length = len(aligned_qualities[0][1]) if aligned_qualities else 0
+    if not aligned_qualities:
+        return []
+    alignment_length = len(aligned_qualities[0][1])
     column_base_counts = []
     for col in range(alignment_length):
         counts = Counter()
@@ -148,37 +150,19 @@ def compute_column_base_counts(aligned_qualities):
         column_base_counts.append(counts)
     return column_base_counts
 
-def write_html(aligned_qualities, column_quals, consensus_full_line, consensus_full_qual, 
-               output_file="alignment.html", binsize=5, max_qual=40, threshold=0.3):
+def records_from_aligned_qualities(aligned_qualities):
+    records = []
+    for (sid, s, ql) in aligned_qualities:
+        records.append(SeqRecord(Seq(s), id=sid, description=""))
+    return records
+
+def write_html(aligned_qualities, column_quals, consensus_full_line, consensus_full_qual, highlight_counts,
+               top_consensus_full_line, top_consensus_full_qual,
+               highlight_map,  # highlight_map is a set of (row,col) that should be highlighted
+               output_file="alignment.html", binsize=5, max_qual=40):
     alignment_length = len(aligned_qualities[0][1]) if aligned_qualities else 0
 
-    # Precompute column base counts for highlighting mismatches
-    column_base_counts = compute_column_base_counts(aligned_qualities)
-
-    def should_highlight(col_index, base):
-        if base not in "ACGT":
-            return False
-        counts = column_base_counts[col_index]
-        non_gap_total = sum(counts.values())
-        if non_gap_total == 0:
-            return False
-        count_base = counts[base]
-        fraction_of_base = count_base / non_gap_total
-        return fraction_of_base < threshold  # less than 30%, means >=70% differ
-
-    # Compute highlight counts per column (for all sequences except the consensus row)
-    highlight_counts = [0]*alignment_length
-    for (seq_id, aligned_seq, q_list) in aligned_qualities:
-        if seq_id == "Consensus":
-            # Skip consensus for counting highlights
-            continue
-        for col_i, base in enumerate(aligned_seq):
-            if base in "ACGT" and should_highlight(col_i, base):
-                highlight_counts[col_i] += 1
-
     css_rules = []
-    num_bins = (max_qual // 5) + 1
-    # Correction: binsize is defined above as a parameter. Use that instead of hard coding 5.
     num_bins = (max_qual // binsize) + 1
     for bin_i in range(num_bins):
         q_val = bin_i * binsize
@@ -206,10 +190,11 @@ def write_html(aligned_qualities, column_quals, consensus_full_line, consensus_f
 
     html.append("<h1>Aligned Sequences with Quality Coloring</h1>")
     html.append("<p>Top row: Average Q per column</p>")
-    html.append("<p>Second row: Highlight counts (number of cells in that column that differ from >=70% of the column)</p>")
-    html.append("<p>Following rows: Sequences labeled Seq1, Seq2, ...</p>")
-    html.append("<p>Last row: Consensus. '-' means column not included in final consensus FASTA.</p>")
-    html.append("<p>Yellow outline indicates a cell's nucleotide differs from >=70% of that column.</p>")
+    html.append("<p>Second row: Highlight counts (cells differing ≥70%)</p>")
+    html.append("<p>Third row: Consensus(top) after N conversions</p>")
+    html.append("<p>Then sequences: Seq1, Seq2, ...</p>")
+    html.append("<p>Last row: Consensus(bottom). '-' means column excluded. 'N' means forced changes or no suitable base.</p>")
+    html.append("<p>Yellow outline: cell differs from ≥70% or was changed to N from highlight+Q<12 condition.</p>")
 
     html.append("<table>")
 
@@ -230,37 +215,40 @@ def write_html(aligned_qualities, column_quals, consensus_full_line, consensus_f
         html.append(f"<th>{hc}</th>")
     html.append("</tr>")
 
-    # Rows for sequences
-    # We'll write all non-consensus first
+    # Top consensus row
+    html.append("<tr>")
+    html.append("<td>Consensus(top)</td>")
+    for col_i, (base, q) in enumerate(zip(top_consensus_full_line, top_consensus_full_qual)):
+        qclass = quality_to_bin(q, binsize=binsize, max_qual=max_qual) if q is not None else "gap"
+        highlight = False
+        cell_class = qclass + (" highlight" if highlight else "")
+        html.append(f"<td class='{cell_class}'>{base}</td>")
+    html.append("</tr>")
+
+    # Non-consensus sequences
     non_consensus = [r for r in aligned_qualities if r[0] != "Consensus"]
-    for (seq_id, aligned_seq, q_list) in non_consensus:
+    for row_i, (seq_id, aligned_seq, q_list) in enumerate(non_consensus):
         html.append("<tr>")
         html.append(f"<td>{seq_id}</td>")
         for col_i, (base, q) in enumerate(zip(aligned_seq, q_list)):
-            if base == '-':
+            if q is None:
                 qclass = "gap"
-                highlight = False
             else:
                 qclass = quality_to_bin(q, binsize=binsize, max_qual=max_qual)
-                highlight = should_highlight(col_i, base)
-
+            highlight = (row_i, col_i) in highlight_map
             cell_class = qclass + (" highlight" if highlight else "")
             html.append(f"<td class='{cell_class}'>{base}</td>")
         html.append("</tr>")
 
-    # Consensus row
+    # Bottom consensus row
     consensus_row = [r for r in aligned_qualities if r[0] == "Consensus"]
     if consensus_row:
-        # We know there's only one consensus row if it exists
         html.append("<tr>")
         html.append("<td>Consensus</td>")
         for col_i, (base, q) in enumerate(zip(consensus_full_line, consensus_full_qual)):
-            if base == '-':
-                qclass = "gap"
-                highlight = False  # no highlight for consensus
-            else:
-                qclass = quality_to_bin(q, binsize=binsize, max_qual=max_qual)
-                highlight = False
+            qclass = quality_to_bin(q, binsize=binsize, max_qual=max_qual) if q is not None else "gap"
+            # bottom consensus highlight = no special highlight needed for consensus row itself
+            highlight = False
             cell_class = qclass + (" highlight" if highlight else "")
             html.append(f"<td class='{cell_class}'>{base}</td>")
         html.append("</tr>")
@@ -268,7 +256,6 @@ def write_html(aligned_qualities, column_quals, consensus_full_line, consensus_f
     html.append("</table>")
     html.append("</body></html>")
 
-    # Write using UTF-8 encoding
     with open(output_file, "w", encoding="utf-8") as f:
         f.write("\n".join(html))
     print(f"HTML alignment visualization written to {output_file}")
@@ -277,9 +264,7 @@ if __name__ == "__main__":
     fastq_file = find_fastq_file()
     print(f"Found FASTQ file: {fastq_file}")
 
-    original_records = {}
-    for record in SeqIO.parse(fastq_file, "fastq"):
-        original_records[record.id] = record
+    original_records = {r.id:r for r in SeqIO.parse(fastq_file, "fastq")}
 
     with tempfile.NamedTemporaryFile(suffix=".fasta", delete=False) as tmp_in:
         input_fasta = tmp_in.name
@@ -288,31 +273,79 @@ if __name__ == "__main__":
                 fh.write(f">{rec_id}\n{str(rec.seq)}\n")
 
     output_fasta = input_fasta + "_aligned.fasta"
-
     print("Running MUSCLE alignment...")
     run_muscle(input_fasta, output_fasta)
 
     aligned_records = list(SeqIO.parse(output_fasta, "fasta"))
     aligned_qualities = align_qualities_to_alignment(aligned_records, original_records)
+
+    highlight_threshold = 0.3
+    column_base_counts = compute_column_base_counts(aligned_qualities)
+
+    # Detect highlight cells pre-transform
+    pre_highlight_cells = []
+    n_converted_cells = set()  # to store cells changed to N
+    for row_i, (seq_id, seq, q_list) in enumerate(aligned_qualities):
+        for col_i, (base, q) in enumerate(zip(seq, q_list)):
+            if base in "ACGT":
+                counts = column_base_counts[col_i]
+                non_gap_total = sum(counts.values())
+                if non_gap_total > 0:
+                    fraction_of_base = counts[base]/non_gap_total
+                    if fraction_of_base < highlight_threshold:
+                        pre_highlight_cells.append((row_i, col_i))
+
+    # Convert highlight+Q<12 → N
+    for (r, c) in pre_highlight_cells:
+        seq_id, seq, q_list = aligned_qualities[r]
+        q = q_list[c]
+        if q is not None and q < 12:
+            seq = list(seq)
+            seq[c] = 'N'
+            seq = ''.join(seq)
+            q_list[c] = None
+            aligned_qualities[r] = (seq_id, seq, q_list)
+            n_converted_cells.add((r, c))  # mark this cell as N-converted
+
+    # Recompute after transformations
+    column_base_counts = compute_column_base_counts(aligned_qualities)
+
+    # Recompute highlight counts after N conversion
+    highlight_counts = [0]*len(aligned_qualities[0][1])
+    # Remember we don't count N cells in highlight counts (they act like gaps for highlight frequency)
+    for row_i, (seq_id, seq, q_list) in enumerate(aligned_qualities):
+        if seq_id == "Consensus":
+            continue
+        for col_i, (base, q) in enumerate(zip(seq, q_list)):
+            if base in "ACGT":
+                counts = column_base_counts[col_i]
+                non_gap_total = sum(counts.values())
+                if non_gap_total > 0:
+                    fraction_of_base = counts[base]/non_gap_total
+                    if fraction_of_base < highlight_threshold:
+                        highlight_counts[col_i] += 1
+            # N or '-' do not count towards highlight counts now
+
+    # Recompute column averages ignoring N (q=None)
     column_quals = compute_column_averages(aligned_qualities)
 
+    # Re-run consensus after changes
+    final_records = records_from_aligned_qualities(aligned_qualities)
     consensus_seq, ambiguity_count, kept_columns = create_consensus_with_ambiguity(
-        aligned_records, threshold=0.7, gap_fraction_cutoff=0.4
+        final_records, threshold=0.7, gap_fraction_cutoff=0.4
     )
 
     alignment_length = len(aligned_qualities[0][1]) if aligned_qualities else 0
     kept_col_set = set(kept_columns)
-    col_to_consensus_char = {}
-    for idx, c in enumerate(kept_columns):
-        col_to_consensus_char[c] = consensus_seq[idx]
 
     consensus_full_line = []
     consensus_full_qual = []
     for i in range(alignment_length):
         if i in kept_col_set:
-            char = col_to_consensus_char[i]
+            idx = kept_columns.index(i)
+            char = consensus_seq[idx]
             q = column_quals[i]
-            q_val = int(round(q)) if q is not None else 0
+            q_val = int(round(q)) if q is not None else None
             consensus_full_line.append(char)
             consensus_full_qual.append(q_val)
         else:
@@ -324,23 +357,51 @@ if __name__ == "__main__":
         seq_id, aligned_seq, q_list = aligned_qualities[i]
         aligned_qualities[i] = (f"Seq{i+1}", aligned_seq, q_list)
 
-    if not kept_columns:
-        # No kept columns, add empty consensus row
-        aligned_qualities.append(("Consensus", "", []))
-        write_html(aligned_qualities, column_quals, consensus_full_line, consensus_full_qual, "alignment.html")
-        print("No columns passed the gap threshold. No consensus fasta generated.")
-        print("Done.")
-        exit(0)
+    # Create top consensus same as final:
+    top_consensus_full_line = consensus_full_line[:]
+    top_consensus_full_qual = consensus_full_qual[:]
 
-    # Add the consensus row at the end
-    # Actually, we already handle consensus row in write_html by checking if it exists in aligned_qualities.
-    # Let's append the consensus row now.
+    # Add final consensus row at bottom
     aligned_qualities.append(("Consensus", ''.join(consensus_full_line), consensus_full_qual))
 
-    write_html(aligned_qualities, column_quals, consensus_full_line, consensus_full_qual, "alignment.html")
+    # Now determine final highlighting:
+    # - N-converted cells remain highlighted.
+    # - Check all cells again. If ACGT <30%, highlight. If cell is N due to conversion, highlight.
+    highlight_map = set()
+    final_column_base_counts = compute_column_base_counts(aligned_qualities)
+    # We know "Consensus" row does not get highlighted
+    non_consensus = [r for r in aligned_qualities if r[0] != "Consensus"]
+    for row_i, (seq_id, seq, q_list) in enumerate(non_consensus):
+        for col_i, (base, q) in enumerate(zip(seq, q_list)):
+            if (row_i, col_i) in n_converted_cells:
+                # remain highlighted
+                highlight_map.add((row_i, col_i))
+            else:
+                # Check highlight conditions for ACGT bases
+                if base in "ACGT":
+                    counts = final_column_base_counts[col_i]
+                    non_gap_total = sum(counts.values())
+                    if non_gap_total > 0:
+                        fraction_of_base = counts[base]/non_gap_total
+                        if fraction_of_base < highlight_threshold:
+                            highlight_map.add((row_i, col_i))
+                # If base is N or '-' but not n_converted_cells, no highlight unless it was from Q<12
 
-    consensus_filename = f"consensus-{ambiguity_count}ambig.fasta"
-    with open(consensus_filename, "w", encoding="utf-8") as cf:
-        cf.write(f">Consensus\n{consensus_seq}\n")
-    print(f"Consensus FASTA file written to {consensus_filename}")
+    # Write HTML
+    write_html(
+        aligned_qualities, column_quals, consensus_full_line, consensus_full_qual, highlight_counts,
+        top_consensus_full_line, top_consensus_full_qual,
+        highlight_map,
+        "alignment.html"
+    )
+
+    # Write consensus fasta
+    if kept_columns:
+        consensus_filename = f"consensus-{ambiguity_count}ambig.fasta"
+        with open(consensus_filename, "w", encoding="utf-8") as cf:
+            cf.write(f">Consensus\n{consensus_seq}\n")
+        print(f"Consensus FASTA file written to {consensus_filename}")
+    else:
+        print("No columns passed the gap threshold. No consensus fasta generated.")
+
     print("Done.")
