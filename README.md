@@ -33,7 +33,7 @@ This repository contains a Python script that:
 2. Ensure MUSCLE is installed and accessible (e.g., `muscle` command works in your terminal).
 3. Run:
    ```bash
-   python consensus-visual7.py
+   python consensus-visual.py
 The script will:
 Find the FASTQ file in the current directory.
 Run MUSCLE to align the sequences.
