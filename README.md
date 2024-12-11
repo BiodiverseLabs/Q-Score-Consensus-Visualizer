@@ -14,7 +14,7 @@ This repository contains a Python script that:
 6. Outputs a consensus FASTA file named `consensus-{X}ambig.fasta`, where `{X}` is the count of ambiguous nucleotides in the consensus.
 
 **Key Features:**
-- **Column Filtering:** Columns with more than 40% gaps are not included in the final consensus FASTA (they appear as `'-'` in the HTML consensus row).
+- **Column Filtering:** Columns with more than 60% gaps are not included in the final consensus FASTA (they appear as `'-'` in the HTML consensus row).
 - **Ambiguity Codes:** Ambiguity codes are computed using only bases that appear in >5% of the reads in that column.
 - **Quality Score Coloring:** Each base cell is colored based on its phred quality score, ranging from red (low) to green (high).
 - **Outlier Highlighting:** Cells that differ from ≥70% of the column are outlined in yellow.
