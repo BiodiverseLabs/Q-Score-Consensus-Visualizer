@@ -405,3 +405,4 @@ if __name__ == "__main__":
         print("No columns passed the gap threshold. No consensus fasta generated.")
 
     print("Done.")
+
