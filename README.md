@@ -1,5 +1,7 @@
 # Q-Score Consensus Visualizer
 
+# UNDER DEVELOPMENT 
+
 This repository contains a Python script that:
 1. Reads a FASTQ file from the current directory.
 2. Runs a MUSCLE alignment on all sequences.
