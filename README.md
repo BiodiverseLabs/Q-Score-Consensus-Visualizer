@@ -1,6 +1,6 @@
 # Q-Score Consensus Visualizer
 
-# UNDER DEVELOPMENT 
+## Under Development
 
 This repository contains a Python script that:
 1. Reads a FASTQ file from the current directory.
