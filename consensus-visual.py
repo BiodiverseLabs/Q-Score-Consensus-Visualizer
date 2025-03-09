@@ -332,7 +332,7 @@ if __name__ == "__main__":
     # Re-run consensus after changes
     final_records = records_from_aligned_qualities(aligned_qualities)
     consensus_seq, ambiguity_count, kept_columns = create_consensus_with_ambiguity(
-        final_records, threshold=0.7, gap_fraction_cutoff=0.4
+        final_records, threshold=0.95, gap_fraction_cutoff=0.4
     )
 
     alignment_length = len(aligned_qualities[0][1]) if aligned_qualities else 0
